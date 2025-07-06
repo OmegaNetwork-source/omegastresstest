@@ -150,6 +150,9 @@ const STRESS_ABI = [
 
 const stressContract = new ethers.Contract(STRESS_CONTRACT, STRESS_ABI, relayerWallet);
 
+// Add a global funding queue
+let lastFundingPromise = Promise.resolve();
+
 function randomAddress() {
     // Generate a random 20-byte address
     return '0x' + [...Array(40)].map(() => Math.floor(Math.random()*16).toString(16)).join('');
@@ -187,7 +190,7 @@ app.post('/stress-tx', async (req, res) => {
         const ephemeral = ephemeralWallet.connect(relayerWallet.provider);
         const FUND_AMOUNT = ethers.utils.parseEther('0.002'); // enough for one tx
 
-        // Use a slightly higher gas price for funding
+        // 2. Fund the ephemeral wallet from the relayer (serialize funding)
         let gasPrice;
         try {
             gasPrice = await relayerWallet.provider.getGasPrice();
@@ -195,14 +198,19 @@ app.post('/stress-tx', async (req, res) => {
         } catch (e) {
             gasPrice = undefined; // fallback to default
         }
-        const fundTx = await relayerWallet.sendTransaction({
-            to: ephemeralAddress,
-            value: FUND_AMOUNT,
-            gasLimit: 21000,
-            ...(gasPrice ? { gasPrice } : {})
+        // Use a queue to serialize funding txs
+        lastFundingPromise = lastFundingPromise.then(async () => {
+            const fundTx = await relayerWallet.sendTransaction({
+                to: ephemeralAddress,
+                value: FUND_AMOUNT,
+                gasLimit: 21000,
+                ...(gasPrice ? { gasPrice } : {})
+            });
+            console.log(`Funding ephemeral wallet ${ephemeralAddress} (tx: ${fundTx.hash})`);
+            await fundTx.wait();
         });
-        console.log(`Funding ephemeral wallet ${ephemeralAddress} (tx: ${fundTx.hash})`);
-        await fundTx.wait();
+        await lastFundingPromise;
+
         // 3. Wait for balance (up to 20 tries, 2s interval)
         let tries = 0;
         let bal = await relayerWallet.provider.getBalance(ephemeralAddress);
