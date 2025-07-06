@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omega Network Stress Test</title>
+    <style>
+        body {
+            background: #111;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 700px;
+            margin: 40px auto;
+            background: #181818;
+            border-radius: 16px;
+            box-shadow: 0 4px 32px #000a;
+            padding: 32px 24px 24px 24px;
+        }
+        h1 {
+            font-size: 2.2em;
+            margin-bottom: 0.2em;
+            letter-spacing: 1px;
+        }
+        .subtitle {
+            color: #bbb;
+            font-size: 1.1em;
+            margin-bottom: 1.5em;
+        }
+        .controls {
+            display: flex;
+            gap: 18px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .controls label {
+            font-size: 1em;
+            color: #ccc;
+        }
+        .controls input {
+            background: #222;
+            color: #fff;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 1em;
+            width: 80px;
+        }
+        .btn {
+            background: #fff;
+            color: #111;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 28px;
+            font-size: 1.1em;
+            font-weight: bold;
+            cursor: pointer;
+            margin-right: 12px;
+            transition: background 0.2s, color 0.2s;
+        }
+        .btn:active {
+            background: #eee;
+        }
+        .btn.stop {
+            background: #ff4444;
+            color: #fff;
+        }
+        .stats {
+            display: flex;
+            gap: 32px;
+            margin-bottom: 18px;
+            flex-wrap: wrap;
+        }
+        .stat {
+            background: #222;
+            border-radius: 8px;
+            padding: 18px 24px;
+            min-width: 120px;
+            text-align: center;
+        }
+        .stat-label {
+            color: #aaa;
+            font-size: 0.95em;
+            margin-bottom: 4px;
+        }
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #fff;
+        }
+        .log-panel {
+            background: #191919;
+            border-radius: 8px;
+            padding: 14px 16px;
+            min-height: 80px;
+            max-height: 180px;
+            overflow-y: auto;
+            font-size: 0.98em;
+            color: #ffb;
+            margin-top: 18px;
+        }
+        @media (max-width: 600px) {
+            .container { padding: 12px 4px; }
+            .stats { flex-direction: column; gap: 12px; }
+            .controls { flex-direction: column; gap: 10px; }
+        }
+        .explorer-link {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            margin-top: 24px;
+            margin-bottom: 12px;
+        }
+        .explorer-btn {
+            background: #222;
+            color: #fff;
+            border: 2px solid #fff;
+            border-radius: 8px;
+            padding: 10px 28px;
+            font-size: 1.1em;
+            font-weight: 600;
+            text-decoration: none;
+            transition: background 0.2s, color 0.2s, border-color 0.2s;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.12);
+        }
+        .explorer-btn:hover {
+            background: #fff;
+            color: #111;
+            border-color: #111;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Ω Omega Stress Test</h1>
+        <div class="subtitle">Simulate high network load with automated wallets and transactions.<br>No MetaMask popups—everything runs via backend relayer.</div>
+        <div class="controls">
+            <label>Wallets: <input type="number" id="walletCount" min="1" max="1000" value="10"></label>
+            <label>Txs/Wallet: <input type="number" id="txPerWallet" min="1" max="100" value="5"></label>
+            <label>Tx Rate (ms): <input type="number" id="txRate" min="50" max="10000" value="500"></label>
+            <button class="btn" id="startBtn">Start</button>
+            <button class="btn stop" id="stopBtn" disabled>Stop</button>
+        </div>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-label">Wallets Created</div>
+                <div class="stat-value" id="statWallets">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Txs Sent</div>
+                <div class="stat-value" id="statTxs">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Successes</div>
+                <div class="stat-value" id="statSuccess">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Failures</div>
+                <div class="stat-value" id="statFail">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">TPS</div>
+                <div class="stat-value" id="statTPS">0</div>
+            </div>
+        </div>
+        <div class="log-panel" id="logPanel"></div>
+    </div>
+    <div class="explorer-link">
+        <a href="https://0x4e454228.explorer.aurora-cloud.dev/" target="_blank" rel="noopener" class="explorer-btn">🔎 View Omega Block Explorer</a>
+    </div>
+    <script>
+        // --- Stress Test State ---
+        let running = false;
+        let walletsCreated = 0, txsSent = 0, successes = 0, failures = 0, tps = 0;
+        let tpsInterval, stressInterval;
+        let logQueue = [];
+
+        // --- UI Elements ---
+        const statWallets = document.getElementById('statWallets');
+        const statTxs = document.getElementById('statTxs');
+        const statSuccess = document.getElementById('statSuccess');
+        const statFail = document.getElementById('statFail');
+        const statTPS = document.getElementById('statTPS');
+        const logPanel = document.getElementById('logPanel');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+
+        // --- Controls ---
+        startBtn.onclick = startStressTest;
+        stopBtn.onclick = stopStressTest;
+
+        function updateStats() {
+            statWallets.textContent = walletsCreated;
+            statTxs.textContent = txsSent;
+            statSuccess.textContent = successes;
+            statFail.textContent = failures;
+            statTPS.textContent = tps;
+        }
+        function log(msg, type = 'info') {
+            logQueue.push({ msg, type });
+            if (logQueue.length > 100) logQueue.shift();
+            logPanel.innerHTML = logQueue.map(e => `<div style="color:${e.type==='error'?'#ff6666':'#ffb'}">${e.msg}</div>`).join('');
+            logPanel.scrollTop = logPanel.scrollHeight;
+        }
+        function resetStats() {
+            walletsCreated = 0; txsSent = 0; successes = 0; failures = 0; tps = 0;
+            updateStats();
+            logQueue = [];
+            logPanel.innerHTML = '';
+        }
+
+        // --- Stress Test Logic ---
+        async function startStressTest() {
+            if (running) return;
+            running = true;
+            resetStats();
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+
+            const walletCount = parseInt(document.getElementById('walletCount').value);
+            const txPerWallet = parseInt(document.getElementById('txPerWallet').value);
+            const txRate = parseInt(document.getElementById('txRate').value);
+
+            log(`Starting stress test: ${walletCount} wallets, ${txPerWallet} tx/wallet, ${txRate}ms/tx`);
+
+            // TPS calculation
+            tpsInterval = setInterval(() => {
+                statTPS.textContent = tps;
+                tps = 0;
+            }, 1000);
+
+            // Main stress loop
+            for (let w = 0; w < walletCount && running; w++) {
+                // Simulate wallet creation (no real private key needed for relayer)
+                walletsCreated++;
+                updateStats();
+                for (let t = 0; t < txPerWallet && running; t++) {
+                    await new Promise(res => setTimeout(res, txRate));
+                    sendStressTx(w, t);
+                }
+            }
+            log('Stress test finished or stopped.');
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            running = false;
+            clearInterval(tpsInterval);
+        }
+
+        function stopStressTest() {
+            running = false;
+            log('Stopping stress test...');
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            clearInterval(tpsInterval);
+        }
+
+        // --- Placeholder: Send transaction via relayer ---
+        async function sendStressTx(walletIdx, txIdx) {
+            try {
+                const res = await fetch('http://localhost:3000/stress-tx', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ walletIdx, txIdx })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    successes++;
+                    tps++;
+                    log(`Wallet #${walletIdx+1} Tx #${txIdx+1} sent: ${data.txHash}`, 'info');
+                } else {
+                    failures++;
+                    log(`Wallet #${walletIdx+1} Tx #${txIdx+1} failed: ${data.error}`, 'error');
+                }
+                txsSent++;
+                updateStats();
+            } catch (err) {
+                failures++;
+                log(`Wallet #${walletIdx+1} Tx #${txIdx+1} error: ${err.message}`, 'error');
+                txsSent++;
+                updateStats();
+            }
+        }
+    </script>
+</body>
+</html> 
