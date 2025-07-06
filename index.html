@@ -173,6 +173,7 @@
     </div>
     <script>
         // --- Stress Test State ---
+        const RELAYER_URL = 'https://omegastresstest.onrender.com';
         let running = false;
         let walletsCreated = 0, txsSent = 0, successes = 0, failures = 0, tps = 0;
         let tpsInterval, stressInterval;
@@ -260,7 +261,7 @@
         // --- Placeholder: Send transaction via relayer ---
         async function sendStressTx(walletIdx, txIdx) {
             try {
-                const res = await fetch('http://localhost:3000/stress-tx', {
+                const res = await fetch(RELAYER_URL + '/stress-tx', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ walletIdx, txIdx })
