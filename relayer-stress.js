@@ -152,6 +152,8 @@ const stressContract = new ethers.Contract(STRESS_CONTRACT, STRESS_ABI, relayerW
 
 // Add a global funding queue
 let lastFundingPromise = Promise.resolve();
+let lastTransactionTime = 0;
+const TRANSACTION_DELAY = 20000; // 20 seconds in milliseconds
 
 function randomAddress() {
     // Generate a random 20-byte address
@@ -184,120 +186,125 @@ app.post('/stress-tx', async (req, res) => {
     try {
         const { walletIdx, txIdx } = req.body;
 
+        // Enforce 20-second delay between transactions
+        const now = Date.now();
+        const timeSinceLastTx = now - lastTransactionTime;
+        if (timeSinceLastTx < TRANSACTION_DELAY) {
+            const waitTime = TRANSACTION_DELAY - timeSinceLastTx;
+            console.log(`⏳ Waiting ${waitTime/1000}s before next transaction...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+        lastTransactionTime = Date.now();
+
         // 1. Generate a new ephemeral wallet
         const ephemeralWallet = ethers.Wallet.createRandom();
         const ephemeralAddress = ephemeralWallet.address;
         const ephemeral = ephemeralWallet.connect(relayerWallet.provider);
         const FUND_AMOUNT = ethers.utils.parseEther('0.002'); // enough for one tx
 
-        // 2. Fund the ephemeral wallet from the relayer (serialize funding)
-        let gasPrice;
-        try {
-            gasPrice = await relayerWallet.provider.getGasPrice();
-            gasPrice = gasPrice.mul(12).div(10); // 20% higher
-        } catch (e) {
-            gasPrice = undefined; // fallback to default
-        }
-        // Use a queue to serialize funding txs
+        console.log(`🔄 Starting stress tx for Wallet #${walletIdx+1} Tx #${txIdx+1} (${ephemeralAddress})`);
+
+        // 2. Fund the ephemeral wallet from the relayer (serialized)
         lastFundingPromise = lastFundingPromise.then(async () => {
+            console.log(`💰 Funding ephemeral wallet ${ephemeralAddress}...`);
             const fundTx = await relayerWallet.sendTransaction({
                 to: ephemeralAddress,
                 value: FUND_AMOUNT,
                 gasLimit: 21000,
-                ...(gasPrice ? { gasPrice } : {})
+                gasPrice: (await relayerWallet.provider.getGasPrice()).mul(120).div(100) // 20% higher gas price
             });
-            console.log(`Funding ephemeral wallet ${ephemeralAddress} (tx: ${fundTx.hash})`);
+            console.log(`📤 Funding tx sent: ${fundTx.hash}`);
             await fundTx.wait();
+            console.log(`✅ Funding confirmed for ${ephemeralAddress}`);
         });
         await lastFundingPromise;
 
-        // 3. Wait for balance (up to 20 tries, 2s interval)
+        // 3. Wait for balance to be available
+        console.log(`⏳ Waiting for balance to be available...`);
         let tries = 0;
-        let bal = await relayerWallet.provider.getBalance(ephemeralAddress);
-        while (bal.lt(ethers.utils.parseEther('0.0015')) && tries < 20) {
-            await new Promise(r => setTimeout(r, 2000));
-            bal = await relayerWallet.provider.getBalance(ephemeralAddress);
+        let balance = ethers.BigNumber.from(0);
+        while (tries < 20) {
+            balance = await relayerWallet.provider.getBalance(ephemeralAddress);
+            if (balance.gte(ethers.utils.parseEther('0.0015'))) {
+                console.log(`✅ Balance confirmed: ${ethers.utils.formatEther(balance)} OMEGA`);
+                break;
+            }
+            console.log(`⏳ Balance check ${tries+1}/20: ${ethers.utils.formatEther(balance)} OMEGA`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
             tries++;
-            if (tries % 5 === 0) console.log(`Waiting for ephemeral wallet funding... (${tries} tries)`);
         }
-        if (bal.lt(ethers.utils.parseEther('0.0015'))) {
-            console.error(`Ephemeral wallet ${ephemeralAddress} did not receive sufficient funds after waiting. Skipping tx.`);
-            return res.json({
-                success: false,
-                error: 'Ephemeral wallet did not receive sufficient funds in time',
-                ephemeralAddress,
-                walletIdx,
-                txIdx
+
+        if (balance.lt(ethers.utils.parseEther('0.0015'))) {
+            console.log(`❌ Insufficient balance after funding: ${ethers.utils.formatEther(balance)} OMEGA`);
+            res.json({ success: false, error: 'Insufficient balance after funding' });
+            return;
+        }
+
+        // 4. Send stress transaction from ephemeral wallet
+        console.log(`🚀 Sending stress transaction from ephemeral wallet...`);
+        const method = Math.floor(Math.random() * 5);
+        let stressTx;
+
+        try {
+            switch (method) {
+                case 0:
+                    // stress(bytes, uint256, string)
+                    const randomData = crypto.randomBytes(32);
+                    const callType = Math.floor(Math.random() * 10);
+                    const note = `Stress test ${Date.now()}`;
+                    stressTx = await stressContract.connect(ephemeral).stress(randomData, callType, note, {
+                        gasLimit: 200000,
+                        value: ethers.utils.parseEther('0.0001')
+                    });
+                    break;
+                case 1:
+                    // stressMaybeRevert(uint256)
+                    const n1 = Math.floor(Math.random() * 1000);
+                    stressTx = await stressContract.connect(ephemeral).stressMaybeRevert(n1, { gasLimit: 100000 });
+                    break;
+                case 2:
+                    // stressNumber(uint256)
+                    const n2 = Math.floor(Math.random() * 1000000);
+                    stressTx = await stressContract.connect(ephemeral).stressNumber(n2, { gasLimit: 100000 });
+                    break;
+                case 3:
+                    // stressString(string)
+                    const s = `Stress string ${Date.now()}`;
+                    stressTx = await stressContract.connect(ephemeral).stressString(s, { gasLimit: 100000 });
+                    break;
+                case 4:
+                    // Native transfer
+                    const randomRecipient = randomAddress();
+                    const randomValue = ethers.utils.parseEther((Math.random() * 0.001).toFixed(6));
+                    stressTx = await ephemeral.sendTransaction({
+                        to: randomRecipient,
+                        value: randomValue,
+                        gasLimit: 21000
+                    });
+                    break;
+            }
+
+            await stressTx.wait();
+            console.log(`✅ Stress transaction successful: ${stressTx.hash}`);
+            res.json({ 
+                success: true, 
+                txHash: stressTx.hash, 
+                ephemeralAddress: ephemeralAddress,
+                method: method 
+            });
+
+        } catch (error) {
+            console.log(`❌ Ephemeral stress tx failed: ${error.message}`);
+            res.json({ 
+                success: false, 
+                error: error.message,
+                ephemeralAddress: ephemeralAddress 
             });
         }
-        // 4. Randomly choose which stress test method to call
-        const methodChoice = Math.floor(Math.random() * 5); // 0-4 for different methods
-        let tx;
-        let methodName;
-        const stressEphemeral = new ethers.Contract(STRESS_CONTRACT, STRESS_ABI, ephemeral);
-        switch (methodChoice) {
-            case 0:
-                const callType = Math.floor(Math.random() * 4);
-                const data = randomData();
-                const note = `Stress test ${Date.now()}`;
-                const value = Math.random() > 0.7 ? ethers.utils.parseEther('0.0005') : 0;
-                tx = await stressEphemeral.stress(data, callType, note, {
-                    value,
-                    gasLimit: 150000
-                });
-                methodName = `stress(${callType}, "${note}")`;
-                break;
-            case 1:
-                const n1 = randomNumber();
-                tx = await stressEphemeral.stressMaybeRevert(n1, {
-                    gasLimit: 100000
-                });
-                methodName = `stressMaybeRevert(${n1})`;
-                break;
-            case 2:
-                const n2 = randomNumber();
-                tx = await stressEphemeral.stressNumber(n2, {
-                    gasLimit: 100000
-                });
-                methodName = `stressNumber(${n2})`;
-                break;
-            case 3:
-                const s = randomString();
-                tx = await stressEphemeral.stressString(s, {
-                    gasLimit: 100000
-                });
-                methodName = `stressString("${s}")`;
-                break;
-            case 4:
-                // Native transfer to random address
-                const toAddress = randomAddress();
-                const transferValue = ethers.utils.parseEther('0.0005');
-                tx = await ephemeral.sendTransaction({
-                    to: toAddress,
-                    value: transferValue,
-                    gasLimit: 21000
-                });
-                methodName = `transfer(${ethers.utils.formatEther(transferValue)} OMEGA)`;
-                break;
-        }
-        await tx.wait();
-        console.log(`✅ Ephemeral tx ${txIdx} (wallet ${walletIdx}): ${methodName} - ${tx.hash}`);
-        res.json({
-            success: true,
-            txHash: tx.hash,
-            ephemeralAddress,
-            method: methodName,
-            walletIdx,
-            txIdx
-        });
+
     } catch (error) {
-        console.error(`❌ Ephemeral stress tx failed: ${error.message}`);
-        res.json({
-            success: false,
-            error: error.message,
-            walletIdx: req.body.walletIdx,
-            txIdx: req.body.txIdx
-        });
+        console.log(`❌ Stress tx error: ${error.message}`);
+        res.json({ success: false, error: error.message });
     }
 });
 
